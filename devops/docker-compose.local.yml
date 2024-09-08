@@ -1,0 +1,27 @@
+version: '3.9'
+
+services:
+  touchpoint_database:
+    image: postgres:latest
+    container_name: touchpoint_database_dev
+    restart: unless-stopped
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: 'touchpoint'
+      POSTGRES_USER: 'postgres'
+      POSTGRES_PASSWORD: 'postgres'
+    networks:
+      - touchpoint
+    ports:
+      - 127.0.0.1:5432:5432
+
+volumes:
+  database-data:      
+
+networks:
+  touchpoint:
+    name: touchpoint
+    external: false
+
+

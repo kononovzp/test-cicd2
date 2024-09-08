@@ -1,0 +1,10 @@
+.vscode
+.github
+.git
+.gitignore
+.husky
+devops/
+node_modules/
+dist/
+npm-debug.log
+yarn-error.log

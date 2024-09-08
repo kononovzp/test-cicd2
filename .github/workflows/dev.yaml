@@ -1,0 +1,105 @@
+name: CI/CD Development to Dev
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  buildAndPublishToECR:
+    name: Build and Publish to AWS ECR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.DEV_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEV_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.DEV_AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+    #   - name: Create Service Account JSON
+    #     run: echo '${{ secrets.DEV_FIREBASE_SERVICE_ACCOUNT }}' > firebase-service-account.json
+
+      - name: Display content of current directory
+        run: ls -la
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.DEV_AWS_ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -f devops/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          echo "Pushing image to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+  deployToEC2:
+    name: Deploy to AWS EC2
+    needs: buildAndPublishToECR
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.DEV_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEV_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.DEV_AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        env:
+          DEV_AWS_REGION: ${{ secrets.DEV_AWS_REGION }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.DEV_AWS_ECR_REPOSITORY }}
+          DB_USERNAME: ${{ secrets.DEV_DB_USERNAME }}
+          IMAGE_TAG: ${{ github.sha }}
+          run: |
+            echo "ENV OK"
+        with:
+          host: ec2-13-60-119-201.eu-north-1.compute.amazonaws.com
+          username: ubuntu
+          port: 22
+          key: ${{ secrets.DEV_SSH_SECRET_KEY }}
+          envs: DEV_AWS_REGION,ECR_REGISTRY,CM_COM_TOKEN,SENTRY_DSN,ECR_REPOSITORY,IMAGE_TAG,BASIC_URL,ADMIN_FRONTEND_URL,FRONTEND_URL,ADMIN_PANEL_URL,EXPIRES_IN,JWT_SECRET,DANGEROUSLY_DISABLE_AUTH_GUARD,SALT_VALUE,POSTGRES_PORT,DB_TYPE,POSTGRES_DATABASE,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_HOST,TYPEORM_SYNC,SENDER_MAIL,SENDER_PASSWORD,MAIL_HOST,MAIL_PORT,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_PUBLIC_BUCKET_NAME,FIREBASE_PROJECT_ID,FIREBASE_CLIENT_EMAIL,FIREBASE_PRIVATE_KEY
+          script: |
+            aws ecr get-login-password --region $DEV_AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+            docker stop backend_dev || true
+            docker rm backend_dev || true
+            docker image prune --all --force
+            docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            docker network create backend_dev || true
+            docker run -d \
+              --name backend_dev \
+              --network backend_dev \
+              --restart unless-stopped \
+              -e PORT=3000 \
+              -p 3000:3000 \
+              -e BASIC_URL="http://localhost" \
+              -e FRONTEND_URL="https://staging.touchpoint.pp.ua/" \
+              -e DB_USERNAME \
+              -e DB_PORT="5432" \
+              -e DB_TYPE="postgres" \
+              -e DB_DATABASE="postgres" \
+              -e DB_PASSWORD="postgres" \
+              -e DB_HOST="touchpoint-dev.cbi4ug022khc.eu-north-1.rds.amazonaws.com" \
+              -e TYPEORM_SYNC="true" \
+              -e NODE_ENV="development" \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
